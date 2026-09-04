@@ -1,17 +1,18 @@
 import time
+import asyncio
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Dict, Any
 
-from app.models.schemas import (
+from schemas import (
     TenantConnectRequest,
     TenantStatusResponse,
     FailedLogRequest,
     DiagnosticsResponse,
     RetriggerRequest
 )
-from app.services.llm_service import analyze_and_correct_payload
-from app.services.sap_connector import SAPIntegrationConnector, sap_client
+from llm_service import analyze_and_correct_payload
+from sap_connector import SAPIntegrationConnector, sap_client
 
 app = FastAPI(
     title="Klyro AI API Engine",
@@ -19,7 +20,6 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Crucial: Allows your Cloudflare Pages frontend (klyroai.in) to communicate with this backend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -33,8 +33,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# In-memory tenant session store (replace with Supabase/Redis in production)
 active_tenants: Dict[str, SAPIntegrationConnector] = {}
+
+@app.on_event("startup")
+async def startup_event():
+    # This runs your worker in the background when FastAPI starts
+    from automation_worker import run_autonomous_agent
+    asyncio.create_task(asyncio.to_thread(run_autonomous_agent))
 
 @app.get("/")
 def health_check():
@@ -42,7 +47,6 @@ def health_check():
 
 @app.post("/api/v1/connect-tenant", response_model=TenantStatusResponse)
 def connect_tenant(creds: TenantConnectRequest):
-    """Called when user clicks 'Connect' on the Lovable Tenant Hub."""
     start_time = time.time()
     try:
         tenant_connector = SAPIntegrationConnector(
@@ -55,7 +59,6 @@ def connect_tenant(creds: TenantConnectRequest):
             runtime_client_secret=creds.runtime_client_secret
         )
         
-        # Validate handshake
         tenant_connector.test_connection()
         active_tenants[creds.tenant_id] = tenant_connector
         latency = int((time.time() - start_time) * 1000)

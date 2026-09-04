@@ -1,11 +1,8 @@
 import os
 import time
 from supabase import create_client
-from app.services.llm_service import analyze_and_correct_payload
-# Import the in-memory tenant dictionary from your main FastAPI routing file
-from main import active_tenants
+from llm_service import analyze_and_correct_payload
 
-# Initialize Supabase client globally
 supabase_url = os.getenv("SUPABASE_URL")
 supabase_key = os.getenv("SUPABASE_KEY")
 supabase = create_client(supabase_url, supabase_key) if supabase_url and supabase_key else None
@@ -14,10 +11,11 @@ retry_cache = {}
 MAX_RETRIES = 3
 
 def run_autonomous_agent():
+    # Import active_tenants locally to prevent circular import errors
+    from main import active_tenants
     print("🤖 Starting 24/7 Multi-Tenant SAP CPI Agent...")
     
     while True:
-        # Pause polling if no users have connected via the frontend UI
         if not active_tenants:
             time.sleep(30)
             continue
@@ -63,12 +61,8 @@ def run_autonomous_agent():
                     )
                     fixed_payload = raw_fixed_payload.replace("```xml", "").replace("```json", "").replace("```", "").strip()
                     
-                    # ==========================================
-                    # DYNAMIC SUPABASE ROUTING
-                    # ==========================================
                     if supabase:
                         try:
-                            # Query the database for this specific client's routing rule
                             rule_response = supabase.table("routing_rules").select("endpoint_path") \
                                 .eq("tenant_id", tenant_id).eq("iflow_name", failed_iflow).execute()
 
@@ -76,7 +70,6 @@ def run_autonomous_agent():
                                 endpoint_path = rule_response.data[0]['endpoint_path']
                                 runtime_url = f"{sap_client.base_runtime_url}/http{endpoint_path}"
                                 
-                                # Automatically push it back into SAP
                                 result = sap_client.retrigger_message(runtime_url, fixed_payload)
                                 print(f"📡 Dynamic Auto-Retrigger Status for {failed_iflow}: {result.get('message')}")
                                 
