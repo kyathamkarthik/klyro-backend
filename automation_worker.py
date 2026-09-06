@@ -4,14 +4,15 @@ from supabase import create_client
 from llm_service import analyze_and_correct_payload
 
 supabase_url = os.getenv("SUPABASE_URL")
-supabase_key = os.getenv("SUPABASE_KEY")
+# CRITICAL: Using the service_role key to bypass Row Level Security for background tasks
+supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") 
 supabase = create_client(supabase_url, supabase_key) if supabase_url and supabase_key else None
 
 retry_cache = {}
 MAX_RETRIES = 3
+TOKEN_COST = 500 # Cost per AI healing operation
 
 def run_autonomous_agent():
-    # Import active_tenants locally to prevent circular import errors
     from main import active_tenants
     print("🤖 Starting 24/7 Multi-Tenant SAP CPI Agent...")
     
@@ -29,6 +30,25 @@ def run_autonomous_agent():
                 
             if not failed_logs:
                 continue
+
+            # NEW: Identity & Billing Verification
+            user_id = None
+            if supabase:
+                try:
+                    # 1. Find which user owns this tenant
+                    tenant_data = supabase.table("tenant_configs").select("user_id").eq("tenant_id", tenant_id).execute()
+                    if tenant_data.data:
+                        user_id = tenant_data.data[0]["user_id"]
+                        
+                        # 2. Check their token wallet balance
+                        wallet = supabase.table("token_wallets").select("balance_tokens").eq("user_id", user_id).execute()
+                        balance = wallet.data[0]["balance_tokens"] if wallet.data else 0
+                        
+                        if balance < TOKEN_COST:
+                            print(f"🛑 [BILLING] Tenant {tenant_id} is out of tokens (Balance: {balance}). Parking in HITL.")
+                            break # Escapes the log loop, pausing all automation for this tenant
+                except Exception as e:
+                    print(f"❌ Could not verify billing for {tenant_id}: {e}")
             
             for log in failed_logs:
                 failed_iflow = log['integration_flow_name']
@@ -74,7 +94,12 @@ def run_autonomous_agent():
                                 print(f"📡 Dynamic Auto-Retrigger Status for {failed_iflow}: {result.get('message')}")
                                 
                                 if result.get("http_code") in [200, 201, 202]:
-                                     retry_cache.pop(log_id, None)
+                                    retry_cache.pop(log_id, None)
+                                    
+                                    # NEW: Deduct tokens via Supabase RPC
+                                    if user_id:
+                                        supabase.rpc("deduct_tokens", {"user_id_param": user_id, "amount": TOKEN_COST}).execute()
+                                        print(f"💸 Successfully deducted {TOKEN_COST} tokens.")
                             else:
                                 print(f"⚠️ No routing rule defined in Supabase for '{failed_iflow}'. Parking in HITL queue.")
                         except Exception as e:
