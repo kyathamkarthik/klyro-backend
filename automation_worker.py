@@ -2,6 +2,7 @@ import os
 import time
 from supabase import create_client
 from llm_service import analyze_and_correct_payload
+from billing_service import calculate_klyro_credits_from_ai_cost
 
 supabase_url = os.getenv("SUPABASE_URL")
 # CRITICAL: Using the service_role key to bypass Row Level Security for background tasks
@@ -10,7 +11,6 @@ supabase = create_client(supabase_url, supabase_key) if supabase_url and supabas
 
 retry_cache = {}
 MAX_RETRIES = 3
-TOKEN_COST = 500 # Cost per AI healing operation
 
 def run_autonomous_agent():
     from main import active_tenants
@@ -31,7 +31,7 @@ def run_autonomous_agent():
             if not failed_logs:
                 continue
 
-            # NEW: Identity & Billing Verification
+            # NEW: Identity & Enterprise Billing Verification
             user_id = None
             if supabase:
                 try:
@@ -40,12 +40,12 @@ def run_autonomous_agent():
                     if tenant_data.data:
                         user_id = tenant_data.data[0]["user_id"]
                         
-                        # 2. Check their token wallet balance
-                        wallet = supabase.table("token_wallets").select("balance_tokens").eq("user_id", user_id).execute()
-                        balance = wallet.data[0]["balance_tokens"] if wallet.data else 0
+                        # 2. Pre-Flight Check: Verify Klyro Credits balance
+                        wallet = supabase.table("credit_wallets").select("current_balance").eq("user_id", user_id).execute()
+                        current_balance = float(wallet.data[0]["current_balance"]) if wallet.data else 0.0
                         
-                        if balance < TOKEN_COST:
-                            print(f"🛑 [BILLING] Tenant {tenant_id} is out of tokens (Balance: {balance}). Parking in HITL.")
+                        if current_balance <= 0.20:
+                            print(f"🛑 [BILLING] Tenant {tenant_id} lacks sufficient Klyro Recovery Credits (Balance: {current_balance}). Parking in HITL.")
                             break # Escapes the log loop, pausing all automation for this tenant
                 except Exception as e:
                     print(f"❌ Could not verify billing for {tenant_id}: {e}")
@@ -74,7 +74,8 @@ def run_autonomous_agent():
                 retry_cache[log_id] = current_retries + 1
                 
                 try:
-                    raw_fixed_payload = analyze_and_correct_payload(
+                    # NEW: Unpacking token usage alongside the payload for precise billing
+                    raw_fixed_payload, input_tokens, output_tokens = analyze_and_correct_payload(
                         integration_flow_name=failed_iflow,
                         error_message=error_msg,
                         raw_payload=broken_payload
@@ -96,10 +97,21 @@ def run_autonomous_agent():
                                 if result.get("http_code") in [200, 201, 202]:
                                     retry_cache.pop(log_id, None)
                                     
-                                    # NEW: Deduct tokens via Supabase RPC
+                                    # NEW: Calculate Actual AI Cost and Deduct Klyro Credits atomically
                                     if user_id:
-                                        supabase.rpc("deduct_tokens", {"user_id_param": user_id, "amount": TOKEN_COST}).execute()
-                                        print(f"💸 Successfully deducted {TOKEN_COST} tokens.")
+                                        actual_cost = (input_tokens * 0.00000015) + (output_tokens * 0.00000060)
+                                        credits_to_deduct = calculate_klyro_credits_from_ai_cost(actual_cost, 4.00, 15.0)
+
+                                        supabase.rpc("process_ai_deduction", {
+                                            "p_user_id": user_id,
+                                            "p_credits_deducted": credits_to_deduct,
+                                            "p_feature": "Autonomous CPI Recovery",
+                                            "p_model": "gpt-4o-mini",
+                                            "p_input_tokens": input_tokens,
+                                            "p_output_tokens": output_tokens,
+                                            "p_actual_cost": actual_cost
+                                        }).execute()
+                                        print(f"💸 Successfully deducted {credits_to_deduct} Klyro Credits.")
                             else:
                                 print(f"⚠️ No routing rule defined in Supabase for '{failed_iflow}'. Parking in HITL queue.")
                         except Exception as e:
