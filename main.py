@@ -28,6 +28,7 @@ app.add_middleware(
         "http://localhost:5173",
         "http://localhost:3000"
     ],
+    allow_origin_regex=r"https://.*\.lovableproject\.com",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -83,15 +84,17 @@ def get_sap_logs(tenant_id: str = None):
 @app.post("/api/v1/analyze-log", response_model=DiagnosticsResponse)
 def analyze_sap_log(request: FailedLogRequest):
     try:
-        corrected_payload = analyze_and_correct_payload(
+        # Unpack the 3 variables returned by the LangChain pipeline
+        fixed_payload, input_tokens, output_tokens = analyze_and_correct_payload(
             integration_flow_name=request.integration_flow_name,
             error_message=request.error_message,
             payload=request.raw_payload
         )
+        
         return DiagnosticsResponse(
             log_id=request.log_id,
             root_cause_explanation=f"Autonomous semantic correction completed for {request.integration_flow_name}.",
-            corrected_payload=corrected_payload,
+            corrected_payload=fixed_payload,
             confidence_score=0.97
         )
     except Exception as e:
