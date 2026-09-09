@@ -2,6 +2,7 @@ import os
 from dotenv import load_dotenv
 from langchain_core.prompts import PromptTemplate
 from langchain_openai import ChatOpenAI
+from security_utils import mask_pii
 
 load_dotenv()
 
@@ -41,18 +42,22 @@ def analyze_and_correct_payload(integration_flow_name: str, error_message: str, 
     """
     actual_payload = payload if payload is not None else raw_payload
     
-    # 1. Route to the appropriate model
-    selected_model = get_model_for_task(error_message)
+    # CRITICAL SECURITY STEP: Mask PII before AI processing
+    safe_payload = mask_pii(actual_payload) if actual_payload else ""
+    safe_error_msg = mask_pii(error_message) if error_message else ""
     
-    # 2. Instantiate LLM dynamically
-    llm = ChatOpenAI(temperature=0.2, model=selected_model)
+    # 1. Route to the appropriate model
+    selected_model = get_model_for_task(safe_error_msg)
+    
+    # 2. Instantiate LLM dynamically (Lowered temperature to 0.1 to prevent hallucinations)
+    llm = ChatOpenAI(temperature=0.1, model=selected_model)
     analysis_chain = prompt | llm
     
-    # 3. Execute request
+    # 3. Execute request with masked data
     response = analysis_chain.invoke({
         "iflow_name": integration_flow_name,
-        "error_msg": error_message,
-        "payload": actual_payload
+        "error_msg": safe_error_msg,
+        "payload": safe_payload
     })
     
     # 4. Extract token usage accurately for the billing ledger
