@@ -12,9 +12,31 @@ supabase = create_client(supabase_url, supabase_key) if supabase_url and supabas
 retry_cache = {}
 MAX_RETRIES = 3
 
+def flag_for_human_review(tenant_id: str, log_id: str, iflow_name: str, error_msg: str, original: str, fixed: str):
+    """
+    Klyro Trust Mode: Freezes autonomous execution and pushes the AI's proposed 
+    payload correction to the HITL database queue for manual approval.
+    """
+    if not supabase:
+        print("⚠️ Supabase client missing. Cannot queue for HITL.")
+        return
+        
+    queue_data = {
+        "tenant_id": tenant_id,
+        "log_id": log_id,
+        "iflow_name": iflow_name,
+        "error_message": error_msg,
+        "original_payload": original,
+        "proposed_payload": fixed,
+        "status": "pending_approval"
+    }
+    
+    supabase.table("hitl_queue").insert(queue_data).execute()
+    print(f"⚠️ Escalated {log_id} to HITL Dashboard for approval.")
+
 def run_autonomous_agent():
     from main import active_tenants
-    print("🤖 Starting 24/7 Multi-Tenant SAP CPI Agent...")
+    print("🤖 Starting 24/7 Multi-Tenant SAP CPI Agent (Trust Mode Enabled)...")
     
     while True:
         if not active_tenants:
@@ -31,22 +53,20 @@ def run_autonomous_agent():
             if not failed_logs:
                 continue
 
-            # NEW: Identity & Enterprise Billing Verification
+            # Identity & Enterprise Billing Verification
             user_id = None
             if supabase:
                 try:
-                    # 1. Find which user owns this tenant
                     tenant_data = supabase.table("tenant_configs").select("user_id").eq("tenant_id", tenant_id).execute()
                     if tenant_data.data:
                         user_id = tenant_data.data[0]["user_id"]
                         
-                        # 2. Pre-Flight Check: Verify Klyro Credits balance
                         wallet = supabase.table("credit_wallets").select("current_balance").eq("user_id", user_id).execute()
                         current_balance = float(wallet.data[0]["current_balance"]) if wallet.data else 0.0
                         
                         if current_balance <= 0.20:
-                            print(f"🛑 [BILLING] Tenant {tenant_id} lacks sufficient Klyro Recovery Credits (Balance: {current_balance}). Parking in HITL.")
-                            break # Escapes the log loop, pausing all automation for this tenant
+                            print(f"🛑 [BILLING] Tenant {tenant_id} lacks sufficient Klyro Recovery Credits. Parking in HITL.")
+                            break 
                 except Exception as e:
                     print(f"❌ Could not verify billing for {tenant_id}: {e}")
             
@@ -74,7 +94,7 @@ def run_autonomous_agent():
                 retry_cache[log_id] = current_retries + 1
                 
                 try:
-                    # NEW: Unpacking token usage alongside the payload for precise billing
+                    # Semantic Correction
                     raw_fixed_payload, input_tokens, output_tokens = analyze_and_correct_payload(
                         integration_flow_name=failed_iflow,
                         error_message=error_msg,
@@ -82,42 +102,34 @@ def run_autonomous_agent():
                     )
                     fixed_payload = raw_fixed_payload.replace("```xml", "").replace("```json", "").replace("```", "").strip()
                     
-                    if supabase:
-                        try:
-                            rule_response = supabase.table("routing_rules").select("endpoint_path") \
-                                .eq("tenant_id", tenant_id).eq("iflow_name", failed_iflow).execute()
+                    # PHASE 2: Freeze execution and flag for manual human review
+                    flag_for_human_review(
+                        tenant_id=tenant_id,
+                        log_id=log_id,
+                        iflow_name=failed_iflow,
+                        error_msg=error_msg,
+                        original=broken_payload,
+                        fixed=fixed_payload
+                    )
+                    
+                    # Remove from retry cache since it is safely in the HITL queue
+                    retry_cache.pop(log_id, None)
+                    
+                    # Calculate Actual AI Cost and Deduct Klyro Credits atomically for the analysis
+                    if supabase and user_id:
+                        actual_cost = (input_tokens * 0.00000015) + (output_tokens * 0.00000060)
+                        credits_to_deduct = calculate_klyro_credits_from_ai_cost(actual_cost, 4.00, 15.0)
 
-                            if rule_response.data:
-                                endpoint_path = rule_response.data[0]['endpoint_path']
-                                runtime_url = f"{sap_client.base_runtime_url}/http{endpoint_path}"
-                                
-                                result = sap_client.retrigger_message(runtime_url, fixed_payload)
-                                print(f"📡 Dynamic Auto-Retrigger Status for {failed_iflow}: {result.get('message')}")
-                                
-                                if result.get("http_code") in [200, 201, 202]:
-                                    retry_cache.pop(log_id, None)
-                                    
-                                    # NEW: Calculate Actual AI Cost and Deduct Klyro Credits atomically
-                                    if user_id:
-                                        actual_cost = (input_tokens * 0.00000015) + (output_tokens * 0.00000060)
-                                        credits_to_deduct = calculate_klyro_credits_from_ai_cost(actual_cost, 4.00, 15.0)
-
-                                        supabase.rpc("process_ai_deduction", {
-                                            "p_user_id": user_id,
-                                            "p_credits_deducted": credits_to_deduct,
-                                            "p_feature": "Autonomous CPI Recovery",
-                                            "p_model": "gpt-4o-mini",
-                                            "p_input_tokens": input_tokens,
-                                            "p_output_tokens": output_tokens,
-                                            "p_actual_cost": actual_cost
-                                        }).execute()
-                                        print(f"💸 Successfully deducted {credits_to_deduct} Klyro Credits.")
-                            else:
-                                print(f"⚠️ No routing rule defined in Supabase for '{failed_iflow}'. Parking in HITL queue.")
-                        except Exception as e:
-                             print(f"❌ Supabase query failed: {str(e)}")
-                    else:
-                        print("⚠️ Supabase credentials missing. Cannot fetch routing rules. Parking in HITL queue.")
+                        supabase.rpc("process_ai_deduction", {
+                            "p_user_id": user_id,
+                            "p_credits_deducted": credits_to_deduct,
+                            "p_feature": "HITL Semantic Healing",
+                            "p_model": "gpt-4o-mini",
+                            "p_input_tokens": input_tokens,
+                            "p_output_tokens": output_tokens,
+                            "p_actual_cost": actual_cost
+                        }).execute()
+                        print(f"💸 Successfully deducted {credits_to_deduct} Klyro Credits.")
                         
                 except Exception as e:
                     print(f"❌ AI Engine failed: {str(e)}")
