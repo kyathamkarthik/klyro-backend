@@ -7,7 +7,6 @@ load_dotenv()
 class SAPIntegrationConnector:
     """
     Multi-tenant SAP BTP Integration Suite Connector.
-    Accepts credentials dynamically from UI or falls back to system environment variables.
     """
     def __init__(
         self,
@@ -38,7 +37,6 @@ class SAPIntegrationConnector:
         return response.json().get("access_token")
 
     def test_connection(self) -> dict:
-        """Validates OAuth credentials and ping SAP MPL endpoint."""
         token = self.get_access_token()
         headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
         response = requests.get(f"{self.mpl_api_url}?$top=1", headers=headers, timeout=15)
