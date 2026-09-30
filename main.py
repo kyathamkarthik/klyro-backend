@@ -1,8 +1,10 @@
 import time
+import os
 import asyncio
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Dict, Any
+from supabase import create_client
 
 from schemas import (
     TenantConnectRequest,
@@ -49,6 +51,7 @@ def health_check():
 def connect_tenant(creds: TenantConnectRequest):
     start_time = time.time()
     try:
+        # 1. Test the SAP connection first
         tenant_connector = SAPIntegrationConnector(
             api_base_url=creds.api_base_url,
             api_client_id=creds.client_id,
@@ -61,6 +64,21 @@ def connect_tenant(creds: TenantConnectRequest):
         
         tenant_connector.test_connection()
         active_tenants[creds.tenant_id] = tenant_connector
+        
+        # 2. Securely push the secrets to Supabase Vault via RPC
+        supabase_url = os.getenv("SUPABASE_URL")
+        supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+        
+        if supabase_url and supabase_key:
+            supabase = create_client(supabase_url, supabase_key)
+            supabase.rpc("store_tenant_credentials", {
+                "p_tenant_id": creds.tenant_id,
+                "p_client_id": creds.client_id,
+                "p_client_secret": creds.client_secret,
+                "p_runtime_client_id": creds.runtime_client_id,
+                "p_runtime_client_secret": creds.runtime_client_secret
+            }).execute()
+
         latency = int((time.time() - start_time) * 1000)
 
         return TenantStatusResponse(
