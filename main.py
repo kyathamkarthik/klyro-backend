@@ -44,9 +44,10 @@ async def startup_event():
     asyncio.create_task(asyncio.to_thread(run_autonomous_agent))
 
 @app.get("/")
+@app.head("/")
 def health_check():
     return {"status": "online", "system": "Klyro AI Kernel"}
-
+    
 def clean_url(url: str) -> str:
     """Bulletproof sanitization for URLs to prevent DNS [Errno -2] failures."""
     if not url:
