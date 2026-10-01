@@ -112,7 +112,10 @@ def connect_tenant(creds: TenantConnectRequest):
                 "p_client_id": client_id,
                 "p_client_secret": client_secret,
                 "p_runtime_client_id": rt_client_id,
-                "p_runtime_client_secret": rt_secret
+                "p_runtime_client_secret": rt_secret,
+                "p_api_base_url": api_url,         # Added for production
+                "p_token_url": token_url,          # Added for production
+                "p_runtime_url": rt_url            # Added for production
             }).execute()
     except Exception as e:
         # We catch the exact Database failure here
