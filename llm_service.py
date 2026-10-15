@@ -37,7 +37,7 @@ def analyze_and_correct_payload(integration_flow_name: str, error_message: str, 
         
     structured_llm = llm.with_structured_output(AIDiagnosisOutput, include_raw=True)
     analysis_chain = diagnosis_prompt | structured_llm
-    
+    # Execute the chain with sanitized inputs ( hardcoded for now, but can be extended to include more context )
     response = analysis_chain.invoke({
         "iflow_name": integration_flow_name,
         "error_msg": safe_error_msg,
